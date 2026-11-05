@@ -18,6 +18,9 @@ export function App() {
   const [vistaActiva, setVistaActiva] = useState('dashboard');
   const [cicloDiaInicio, setCicloDiaInicio] = useState(1);
   const [modalCicloAbierto, setModalCicloAbierto] = useState(false);
+  
+  // --- Estado para abrir/cerrar el menú en móvil ---
+  const [menuAbierto, setMenuAbierto] = useState(false);
 
   // --- Estado del Modo Privacidad (Incognito Mode) ---
   const [modoOculto, setModoOculto] = useState(() => {
@@ -71,17 +74,14 @@ export function App() {
     );
   }
 
-  // 1. Si no hay sesión y no se ha pulsado iniciar sesión, mostrar Landing
   if (!session && !mostrarLogin) {
     return <LandingVista alIrALogin={() => setMostrarLogin(true)} />;
   }
 
-  // 2. Si no hay sesión pero se indicó iniciar sesión, mostrar Login
   if (!session && mostrarLogin) {
     return <LoginVista alVolver={() => setMostrarLogin(false)} />;
   }
 
-  // Protección de seguridad adicional por si session es null repentinamente
   if (!session?.user) {
     return <LandingVista alIrALogin={() => setMostrarLogin(true)} />;
   }
@@ -96,19 +96,19 @@ export function App() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row overflow-x-hidden font-sans">
       
-      {/* Sidebar Lateral de Navegación */}
-      <div className="flex flex-col justify-between">
-        <NavegacionSidebar 
-          vistaActiva={vistaActiva} 
-          setVistaActiva={setVistaActiva} 
-        />
-      </div>
+      {/* Barra lateral con soporte para drawer móvil */}
+      <NavegacionSidebar 
+        vistaActiva={vistaActiva} 
+        setVistaActiva={setVistaActiva} 
+        menuAbierto={menuAbierto}
+        setMenuAbierto={setMenuAbierto}
+      />
 
       {/* Contenido Principal */}
-      <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto max-h-screen relative">
+      <main className="flex-1 p-4 sm:p-6 lg:p-8 overflow-y-auto relative pb-24 md:pb-6">
         
         {/* Barra superior con acciones globales */}
-        <div className="absolute top-4 right-4 z-20 hidden md:flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 mb-6 md:absolute md:top-4 md:right-4 md:z-20">
           
           {/* Botón Modo Privacidad */}
           <button
@@ -126,22 +126,22 @@ export function App() {
           {/* Botón Ciclo */}
           <button
             onClick={() => setModalCicloAbierto(true)}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 hover:text-white text-xs font-semibold rounded-xl transition-all shadow-sm flex items-center gap-1.5"
+            className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 text-xs font-semibold rounded-xl transition-all shadow-sm"
           >
-            ⚙️ Ciclo: Día {cicloDiaInicio}
+            ⚙️ Día {cicloDiaInicio}
           </button>
 
           {/* Botón Logout */}
           <button
             onClick={cerrarSesion}
-            className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white text-xs font-semibold rounded-xl transition-all shadow-sm"
+            className="px-3 py-2 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-400 hover:text-white text-xs font-semibold rounded-xl transition-all shadow-sm"
           >
-            🚪 Cerrar Sesión
+            🚪 Salir
           </button>
         </div>
 
-        {/* Vistas dinámicas pasando el estado de privacidad y ciclo */}
-        <div className="mt-8 md:mt-0">
+        {/* Vistas dinámicas */}
+        <div className="mt-2 md:mt-0">
           {vistaActiva === 'dashboard' && <DashboardVista usuarioId={usuarioId} cicloDiaInicio={cicloDiaInicio} modoOculto={modoOculto} />}
           {vistaActiva === 'ingresos' && <IngresosVista usuarioId={usuarioId} modoOculto={modoOculto} />}
           {vistaActiva === 'gastos' && <GastosVista usuarioId={usuarioId} modoOculto={modoOculto} />}

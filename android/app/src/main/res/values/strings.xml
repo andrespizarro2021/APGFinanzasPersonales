@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">APG Finanzas Personales</string>
+    <string name="title_activity_main">APG Finanzas Personales</string>
+    <string name="package_name">com.apg.finanzaspersonales</string>
+    <string name="custom_url_scheme">com.apg.finanzaspersonales</string>
+</resources>
