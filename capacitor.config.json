@@ -1,5 +1,9 @@
 {
   "appId": "com.apg.finanzaspersonales",
   "appName": "APG Finanzas Personales",
-  "webDir": "dist"
+  "webDir": "dist",
+  "assets": {
+    "icon": "assets/logo.png",
+    "splash": "assets/logo.png"
+  }
 }

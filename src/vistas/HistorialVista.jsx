@@ -1,195 +1,173 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { obtenerIngresos, obtenerGastos } from '../servicios/transaccionServicio';
-import { obtenerDeudas } from '../servicios/deudaServicio';
-import { formatearMonto } from '../utilidades/formateador';
+import React, { useState, useEffect } from 'react';
+import { supabase } from '../configuracion/supabaseCliente';
 
-const formatearMoneda = (monto) => {
-  return Number(monto || 0).toLocaleString('es-CL', { 
-    maximumFractionDigits: 0 
-  });
-};
-
-export function HistorialVista({ usuarioId }) {
-  const [historialMeses, setHistorialMeses] = useState([]);
+export function HistorialVista({ usuarioId, cicloDiaInicio = 1, modoOculto = false }) {
   const [cargando, setCargando] = useState(true);
+  const [gastosPorDia, setGastosPorDia] = useState({});
+  const [totalCiclo, setTotalCiclo] = useState(0);
 
-  const cargarHistorial = useCallback(async () => {
-    if (!usuarioId) return;
+  useEffect(() => {
+    if (usuarioId) {
+      cargarHistorialCiclo();
+    }
+  }, [usuarioId, cicloDiaInicio]);
 
+  const cargarHistorialCiclo = async () => {
     try {
       setCargando(true);
-      const [listaIngresos, listaGastos, listaDeudas] = await Promise.all([
-        obtenerIngresos(usuarioId).catch(() => []),
-        obtenerGastos(usuarioId).catch(() => []),
-        obtenerDeudas(usuarioId).catch(() => [])
-      ]);
 
-      const mesesAgrupados = {};
+      // 1. Calcular el rango de fechas actual basado en el cicloDiaInicio
+      const hoy = new Date();
+      let anio = hoy.getFullYear();
+      let mes = hoy.getMonth();
 
-      const obtenerClaveMes = (fechaStr) => {
-        if (!fechaStr) return null;
-        // Limpiar la cadena por si viene con formato ISO completo (ej. 2026-10-21T00:00:00)
-        const soloFecha = String(fechaStr).split('T')[0];
-        const partes = soloFecha.split('-');
-        
-        if (partes.length < 2) return null;
-        
-        const anio = partes[0];
-        const mes = partes[1];
-        
-        if (!anio || !mes || isNaN(anio) || isNaN(mes)) return null;
-        return `${anio}-${mes.padStart(2, '0')}`;
-      };
+      let fechaInicio, fechaFin;
 
-      const crearEstructuraMes = (clave) => {
-        let nombreFormateado = clave;
-        if (clave && clave !== 'Sin Fecha') {
-          const [anio, mes] = clave.split('-');
-          const fechaObj = new Date(Number(anio), Number(mes) - 1, 1);
-          if (!isNaN(fechaObj.getTime())) {
-            nombreFormateado = fechaObj.toLocaleDateString('es-ES', { month: 'long', year: 'numeric' });
-            nombreFormateado = nombreFormateado.charAt(0).toUpperCase() + nombreFormateado.slice(1);
-          }
+      if (hoy.getDate() >= cicloDiaInicio) {
+        // El ciclo actual comenzó este mes
+        fechaInicio = new Date(anio, mes, cicloDiaInicio);
+        fechaFin = new Date(anio, mes + 1, cicloDiaInicio - 1);
+      } else {
+        // El ciclo actual comenzó el mes pasado
+        fechaInicio = new Date(anio, mes - 1, cicloDiaInicio);
+        fechaFin = new Date(anio, mes, cicloDiaInicio - 1);
+      }
+
+      // Formatear a YYYY-MM-DD para Supabase
+      const formatoInicio = fechaInicio.toISOString().split('T')[0];
+      const formatoFin = fechaFin.toISOString().split('T')[0];
+
+      // 2. Consultar los gastos de la tabla 'expenses'
+      const { data, error } = await supabase
+        .from('expenses')
+        .select('date, amount, description, category')
+        .eq('user_id', usuarioId)
+        .gte('date', formatoInicio)
+        .lte('date', formatoFin)
+        .order('date', { ascending: false });
+
+      if (error) throw error;
+
+      // 3. Agrupar y sumar los gastos por día
+      const agrupados = {};
+      let sumaTotal = 0;
+
+      data.forEach((item) => {
+        // Compatibilidad por si la fecha viene en 'date' o 'fecha'
+        const diaStr = item.date || item.fecha; 
+        const montoNum = Number(item.amount || item.monto || 0);
+
+        if (!agrupados[diaStr]) {
+          agrupados[diaStr] = {
+            totalDia: 0,
+            transacciones: []
+          };
         }
-        return {
-          clave: clave || 'sin-fecha',
-          nombre: nombreFormateado || 'Período Indefinido',
-          ingresos: 0,
-          gastosNormales: 0,
-          gastosHormiga: 0,
-          gastosTotales: 0,
-          deudasPendientes: 0,
-        };
-      };
 
-      // Procesar Ingresos
-      listaIngresos.forEach(item => {
-        const clave = obtenerClaveMes(item.date) || obtenerClaveMes(item.created_at) || '2026-10'; // Fallback seguro
-        if (!mesesAgrupados[clave]) mesesAgrupados[clave] = crearEstructuraMes(clave);
-        mesesAgrupados[clave].ingresos += Number(item.amount || 0);
+        agrupados[diaStr].totalDia += montoNum;
+        agrupados[diaStr].transacciones.push({
+          descripcion: item.description || item.descripcion || 'Gasto sin descripción',
+          categoria: item.category || item.categoria || 'General',
+          monto: montoNum
+        });
+
+        sumaTotal += montoNum;
       });
 
-      // Procesar Gastos y Gastos Hormiga
-      listaGastos.forEach(item => {
-        const clave = obtenerClaveMes(item.date) || obtenerClaveMes(item.created_at) || '2026-10';
-        if (!mesesAgrupados[clave]) mesesAgrupados[clave] = crearEstructuraMes(clave);
-        const monto = Number(item.amount || 0);
-        mesesAgrupados[clave].gastosTotales += monto;
+      setGastosPorDia(agrupados);
+      setTotalCiclo(sumaTotal);
 
-        if (item.category === 'Gastos Hormiga') {
-          mesesAgrupados[clave].gastosHormiga += monto;
-        } else {
-          mesesAgrupados[clave].gastosNormales += monto;
-        }
-      });
-
-      // Procesar Deudas
-      listaDeudas.forEach(item => {
-        const restante = item.remaining_amount !== undefined 
-          ? Number(item.remaining_amount) 
-          : Number(item.total_amount || 0) - (Number(item.paid_installments || 0) * Number(item.monthly_payment || 0));
-        
-        const clave = obtenerClaveMes(item.created_at) || obtenerClaveMes(item.fecha_inicio) || '2026-10';
-        if (!mesesAgrupados[clave]) mesesAgrupados[clave] = crearEstructuraMes(clave);
-        mesesAgrupados[clave].deudasPendientes += Math.max(restante, 0);
-      });
-
-      const arrayHistorial = Object.values(mesesAgrupados).sort((a, b) => b.clave.localeCompare(a.clave));
-      setHistorialMeses(arrayHistorial);
-
-    } catch (error) {
-      console.error('Error al cargar historial:', error);
+    } catch (err) {
+      console.error('Error al cargar historial del ciclo:', err);
     } finally {
       setCargando(false);
     }
-  }, [usuarioId]);
+  };
 
-  useEffect(() => {
-    cargarHistorial();
-  }, [cargarHistorial]);
+  const formatearMonto = (monto) => {
+    if (modoOculto) return '••••••';
+    return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(monto);
+  };
 
   if (cargando) {
     return (
-      <div className="flex justify-center items-center h-64 text-slate-400 font-medium">
-        Cargando historial de ciclos...
+      <div className="flex justify-center items-center py-20 text-slate-400 text-xs font-mono">
+        Calculando historial diario del ciclo...
       </div>
     );
   }
 
+  const diasKeys = Object.keys(gastosPorDia);
+
   return (
-    <div className="max-w-6xl mx-auto space-y-6 animate-fadeIn pb-12 font-sans">
+    <div className="space-y-6 max-w-4xl mx-auto pb-10">
       
-      {/* Encabezado */}
-      <div className="glass-card glass-card-hover p-6 rounded-3xl relative overflow-hidden">
-        <div className="absolute -right-12 -top-12 w-40 h-40 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
-        <h1 className="text-2xl font-black text-white tracking-tight">Historial de Ciclos Financieros</h1>
-        <p className="text-xs text-slate-400 mt-1">
-          Resumen detallado de tus ingresos, egresos, gastos hormiga y deudas por cada período anterior.
-        </p>
+      {/* Cabecera de la Vista */}
+      <div className="bg-slate-900/60 border border-slate-800/80 p-6 rounded-3xl backdrop-blur-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h2 className="text-lg font-bold text-white font-mono flex items-center gap-2">
+            📂 Historial Diario del Ciclo
+          </h2>
+          <p className="text-xs text-slate-400 mt-1">
+            Desglose detallado de gastos día a día (Iniciado el día {cicloDiaInicio} de cada mes).
+          </p>
+        </div>
+        <div className="bg-slate-950/60 px-4 py-3 rounded-2xl border border-slate-800 text-right">
+          <span className="text-[10px] uppercase font-semibold text-slate-400 block font-mono">Total Gastado en el Ciclo</span>
+          <span className="text-base font-black text-rose-400 font-mono">{formatearMonto(totalCiclo)}</span>
+        </div>
       </div>
 
-      {historialMeses.length === 0 ? (
-        <div className="glass-card p-12 text-center text-slate-400 text-sm rounded-3xl">
-          No hay registros históricos suficientes en este momento.
+      {/* Lista de Gastos por Día */}
+      {diasKeys.length === 0 ? (
+        <div className="bg-slate-900/30 border border-slate-800/60 rounded-3xl p-12 text-center text-slate-500 text-xs font-mono">
+          No hay registros de gastos en el ciclo actual.
         </div>
       ) : (
         <div className="space-y-4">
-          {historialMeses.map((mes) => {
-            const saldoNeto = mes.ingresos - mes.gastosTotales;
+          {diasKeys.map((fecha) => {
+            const infoDia = gastosPorDia[fecha];
             return (
-              <div key={mes.clave} className="glass-card glass-card-hover p-6 rounded-3xl space-y-4">
-                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-slate-800 pb-3">
-                  <div>
-                    <h3 className="text-lg font-bold text-white tracking-wide">{mes.nombre}</h3>
-                    <span className="text-[11px] text-slate-400 uppercase tracking-wider">Período Financiero Cerrado</span>
-                  </div>
-                  <div className="text-right">
-                    <span className="text-xs text-slate-400 block">Balance Neto</span>
-                    <span className={`text-base font-black font-mono ${saldoNeto >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {saldoNeto >= 0 ? '+' : ''}${formatearMoneda(saldoNeto)}
+              <div 
+                key={fecha} 
+                className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 sm:p-5 backdrop-blur-xl transition-all hover:border-indigo-500/30"
+              >
+                {/* Cabecera del Día */}
+                <div className="flex justify-between items-center pb-3 border-b border-slate-800/60 mb-3">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-cyan-400 font-mono bg-cyan-950/40 px-2.5 py-1 rounded-lg border border-cyan-500/20">
+                      📅 {fecha}
+                    </span>
+                    <span className="text-[11px] text-slate-400 font-mono">
+                      ({infoDia.transacciones.length} {infoDia.transacciones.length === 1 ? 'movimiento' : 'movimientos'})
                     </span>
                   </div>
+                  <span className="text-sm font-bold text-rose-400 font-mono">
+                    {formatearMonto(infoDia.totalDia)}
+                  </span>
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 pt-1">
-                  {/* Ingresos */}
-                  <div className="bg-slate-900/60 p-4 rounded-2xl border border-emerald-500/20">
-                    <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider block">Ingresos</span>
-                    <span className="text-lg font-black font-mono text-white mt-1 block">
-                      +${formatearMoneda(mes.ingresos)}
-                    </span>
-                  </div>
-
-                  {/* Gastos Totales */}
-                  <div className="bg-slate-900/60 p-4 rounded-2xl border border-rose-500/20">
-                    <span className="text-[10px] font-semibold text-rose-400 uppercase tracking-wider block">Gastos Totales</span>
-                    <span className="text-lg font-black font-mono text-white mt-1 block">
-                      -${formatearMoneda(mes.gastosTotales)}
-                    </span>
-                  </div>
-
-                  {/* Gastos Hormiga */}
-                  <div className="bg-slate-900/60 p-4 rounded-2xl border border-amber-500/20">
-                    <span className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider block">🐜 Gastos Hormiga</span>
-                    <span className="text-lg font-black font-mono text-amber-300 mt-1 block">
-                      -${formatearMoneda(mes.gastosHormiga)}
-                    </span>
-                  </div>
-
-                  {/* Deudas */}
-                  <div className="bg-slate-900/60 p-4 rounded-2xl border border-cyan-500/20">
-                    <span className="text-[10px] font-semibold text-cyan-400 uppercase tracking-wider block">Deuda Pendiente</span>
-                    <span className="text-lg font-black font-mono text-white mt-1 block">
-                      ${formatearMoneda(mes.deudasPendientes)}
-                    </span>
-                  </div>
+                {/* Detalle de transacciones del día */}
+                <div className="space-y-2">
+                  {infoDia.transacciones.map((tx, idx) => (
+                    <div key={idx} className="flex justify-between items-center text-xs py-1.5 px-3 rounded-xl bg-slate-950/40 border border-slate-900">
+                      <div className="flex flex-col">
+                        <span className="text-slate-200 font-medium">{tx.descripcion}</span>
+                        <span className="text-[10px] text-slate-400 font-mono">{tx.categoria}</span>
+                      </div>
+                      <span className="font-semibold text-rose-400/90 font-mono">
+                        -{formatearMonto(tx.monto)}
+                      </span>
+                    </div>
+                  ))}
                 </div>
               </div>
             );
           })}
         </div>
       )}
-
     </div>
   );
 }
+
+export default HistorialVista;
