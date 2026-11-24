@@ -376,21 +376,7 @@ export function DashboardVista({
             </p>
           </div>
 
-          <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <span className="text-slate-400">
-              Cupo libre hoy:{' '}
-              <strong
-                className={
-                  presupuestoDiarioRestanteHoy >= 0 ? 'text-slate-100' : 'text-[#F43F5E]'
-                }
-              >
-                {formatoCLP(presupuestoDiarioRestanteHoy)}
-              </strong>
-            </span>
-            <span className="text-slate-400">
-              Desde mañana: <strong className="text-slate-200">{formatoCLP(presupuestoDiarioManana)}/día</strong>
-            </span>
-          </div>
+          
         </div>
       </div>
 
