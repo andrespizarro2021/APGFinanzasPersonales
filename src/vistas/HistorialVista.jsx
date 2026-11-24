@@ -1,171 +1,205 @@
-import React, { useState, useEffect } from 'react';
-import { supabase } from '../configuracion/supabaseCliente';
+import React, { useMemo, useState } from 'react';
+import {
+  calcularGastoDiario,
+  filtrarGastosDeHoy,
+  formatearMonedaCLP,
+  obtenerFechaLocalISO,
+} from '../utilidades/finanzasFecha';
 
-export function HistorialVista({ usuarioId, cicloDiaInicio = 1, modoOculto = false }) {
-  const [cargando, setCargando] = useState(true);
-  const [gastosPorDia, setGastosPorDia] = useState({});
-  const [totalCiclo, setTotalCiclo] = useState(0);
+export function HistorialVista({
+  gastos = [],
+  onAgregarGasto,
+  onEliminarGasto,
+  cargando = false,
+}) {
+  const [descripcion, setDescripcion] = useState('');
+  const [monto, setMonto] = useState('');
+  const [categoria, setCategoria] = useState('Alimentación');
+  const [fecha, setFecha] = useState(obtenerFechaLocalISO());
+  const [soloHoy, setSoloHoy] = useState(false);
+  const [guardando, setGuardando] = useState(false);
 
-  useEffect(() => {
-    if (usuarioId) {
-      cargarHistorialCiclo();
-    }
-  }, [usuarioId, cicloDiaInicio]);
+  const gastoHoy = useMemo(() => calcularGastoDiario(gastos), [gastos]);
+  const movimientosHoy = useMemo(() => filtrarGastosDeHoy(gastos), [gastos]);
 
-  const cargarHistorialCiclo = async () => {
+  const gastosVisibles = useMemo(() => {
+    const base = soloHoy ? movimientosHoy : gastos;
+    return [...base].sort((a, b) => {
+      const fA = String(a?.fecha || a?.created_at || '');
+      const fB = String(b?.fecha || b?.created_at || '');
+      return fB.localeCompare(fA);
+    });
+  }, [gastos, movimientosHoy, soloHoy]);
+
+  const manejarSubmit = async (e) => {
+    e.preventDefault();
+    const montoNumerico = Number(monto);
+    if (!descripcion.trim() || !montoNumerico || montoNumerico <= 0) return;
+
+    setGuardando(true);
     try {
-      setCargando(true);
-
-      // 1. Calcular el rango de fechas actual basado en el cicloDiaInicio
-      const hoy = new Date();
-      let anio = hoy.getFullYear();
-      let mes = hoy.getMonth();
-
-      let fechaInicio, fechaFin;
-
-      if (hoy.getDate() >= cicloDiaInicio) {
-        // El ciclo actual comenzó este mes
-        fechaInicio = new Date(anio, mes, cicloDiaInicio);
-        fechaFin = new Date(anio, mes + 1, cicloDiaInicio - 1);
-      } else {
-        // El ciclo actual comenzó el mes pasado
-        fechaInicio = new Date(anio, mes - 1, cicloDiaInicio);
-        fechaFin = new Date(anio, mes, cicloDiaInicio - 1);
-      }
-
-      // Formatear a YYYY-MM-DD para Supabase
-      const formatoInicio = fechaInicio.toISOString().split('T')[0];
-      const formatoFin = fechaFin.toISOString().split('T')[0];
-
-      // 2. Consultar los gastos de la tabla 'expenses'
-      const { data, error } = await supabase
-        .from('expenses')
-        .select('date, amount, description, category')
-        .eq('user_id', usuarioId)
-        .gte('date', formatoInicio)
-        .lte('date', formatoFin)
-        .order('date', { ascending: false });
-
-      if (error) throw error;
-
-      // 3. Agrupar y sumar los gastos por día
-      const agrupados = {};
-      let sumaTotal = 0;
-
-      data.forEach((item) => {
-        // Compatibilidad por si la fecha viene en 'date' o 'fecha'
-        const diaStr = item.date || item.fecha; 
-        const montoNum = Number(item.amount || item.monto || 0);
-
-        if (!agrupados[diaStr]) {
-          agrupados[diaStr] = {
-            totalDia: 0,
-            transacciones: []
-          };
-        }
-
-        agrupados[diaStr].totalDia += montoNum;
-        agrupados[diaStr].transacciones.push({
-          descripcion: item.description || item.descripcion || 'Gasto sin descripción',
-          categoria: item.category || item.categoria || 'General',
-          monto: montoNum
+      if (typeof onAgregarGasto === 'function') {
+        await onAgregarGasto({
+          descripcion: descripcion.trim(),
+          monto: montoNumerico,
+          categoria,
+          fecha,
         });
-
-        sumaTotal += montoNum;
-      });
-
-      setGastosPorDia(agrupados);
-      setTotalCiclo(sumaTotal);
-
-    } catch (err) {
-      console.error('Error al cargar historial del ciclo:', err);
+      }
+      setDescripcion('');
+      setMonto('');
+      setFecha(obtenerFechaLocalISO());
     } finally {
-      setCargando(false);
+      setGuardando(false);
     }
   };
-
-  const formatearMonto = (monto) => {
-    if (modoOculto) return '••••••';
-    return new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' }).format(monto);
-  };
-
-  if (cargando) {
-    return (
-      <div className="flex justify-center items-center py-20 text-slate-400 text-xs font-mono">
-        Calculando historial diario del ciclo...
-      </div>
-    );
-  }
-
-  const diasKeys = Object.keys(gastosPorDia);
 
   return (
-    <div className="space-y-6 max-w-4xl mx-auto pb-10">
-      
-      {/* Cabecera de la Vista */}
-      <div className="bg-slate-900/60 border border-slate-800/80 p-6 rounded-3xl backdrop-blur-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="space-y-5 text-slate-100">
+      {/* Tarjeta superior: Gasto Diario */}
+      <div className="p-5 rounded-2xl bg-[#161B22] border border-slate-800 flex items-center justify-between shadow-lg">
         <div>
-          <h2 className="text-lg font-bold text-white font-mono flex items-center gap-2">
-            📂 Historial Diario del Ciclo
-          </h2>
+          <p className="text-xs uppercase tracking-wider text-slate-400 font-semibold">
+            Monto gastado hoy
+          </p>
+          <p className="text-3xl font-black text-[#F43F5E] mt-1">
+            {formatearMonedaCLP(gastoHoy)}
+          </p>
           <p className="text-xs text-slate-400 mt-1">
-            Desglose detallado de gastos día a día (Iniciado el día {cicloDiaInicio} de cada mes).
+            {movimientosHoy.length}{' '}
+            {movimientosHoy.length === 1 ? 'gasto registrado hoy' : 'gastos registrados hoy'}
           </p>
         </div>
-        <div className="bg-slate-950/60 px-4 py-3 rounded-2xl border border-slate-800 text-right">
-          <span className="text-[10px] uppercase font-semibold text-slate-400 block font-mono">Total Gastado en el Ciclo</span>
-          <span className="text-base font-black text-rose-400 font-mono">{formatearMonto(totalCiclo)}</span>
-        </div>
+
+        <button
+          type="button"
+          onClick={() => setSoloHoy((prev) => !prev)}
+          className={`px-3.5 py-2 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+            soloHoy
+              ? 'bg-[#F43F5E] text-white border-[#F43F5E]'
+              : 'bg-[#0D1117] text-slate-300 border-slate-700 hover:border-slate-500'
+          }`}
+        >
+          {soloHoy ? 'Viendo: Solo hoy' : 'Filtrar hoy'}
+        </button>
       </div>
 
-      {/* Lista de Gastos por Día */}
-      {diasKeys.length === 0 ? (
-        <div className="bg-slate-900/30 border border-slate-800/60 rounded-3xl p-12 text-center text-slate-500 text-xs font-mono">
-          No hay registros de gastos en el ciclo actual.
+      {/* Formulario rápido de registro de gasto */}
+      {typeof onAgregarGasto === 'function' && (
+        <form
+          onSubmit={manejarSubmit}
+          className="p-4 rounded-2xl bg-[#161B22] border border-slate-800 space-y-3"
+        >
+          <h3 className="text-sm font-bold text-slate-200">Registrar nuevo gasto</h3>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <input
+              type="text"
+              required
+              placeholder="Ej. Supermercado, bencina, pan..."
+              value={descripcion}
+              onChange={(e) => setDescripcion(e.target.value)}
+              className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#F43F5E]"
+            />
+
+            <input
+              type="number"
+              required
+              min="1"
+              step="1"
+              placeholder="Monto ($)"
+              value={monto}
+              onChange={(e) => setMonto(e.target.value)}
+              className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#F43F5E]"
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <select
+              value={categoria}
+              onChange={(e) => setCategoria(e.target.value)}
+              className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#F43F5E]"
+            >
+              <option value="Alimentación">Alimentación</option>
+              <option value="Transporte">Transporte</option>
+              <option value="Cuentas y Hogar">Cuentas y Hogar</option>
+              <option value="Salud">Salud</option>
+              <option value="Vehículo">Vehículo</option>
+              <option value="Otros">Otros</option>
+            </select>
+
+            <input
+              type="date"
+              required
+              value={fecha}
+              onChange={(e) => setFecha(e.target.value)}
+              className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#F43F5E]"
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={guardando}
+            className="w-full py-2.5 rounded-xl bg-[#F43F5E] hover:opacity-95 text-white font-semibold text-sm transition-all cursor-pointer disabled:opacity-50"
+          >
+            {guardando ? 'Guardando gasto...' : '+ Agregar Gasto'}
+          </button>
+        </form>
+      )}
+
+      {/* Listado de gastos */}
+      <div className="rounded-2xl bg-[#161B22] border border-slate-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <h3 className="text-sm font-bold text-slate-200">
+            {soloHoy ? 'Movimientos de hoy' : 'Historial de gastos'}
+          </h3>
+          <span className="text-xs text-slate-400">{gastosVisibles.length} registros</span>
         </div>
-      ) : (
-        <div className="space-y-4">
-          {diasKeys.map((fecha) => {
-            const infoDia = gastosPorDia[fecha];
-            return (
-              <div 
-                key={fecha} 
-                className="bg-slate-900/50 border border-slate-800/80 rounded-2xl p-4 sm:p-5 backdrop-blur-xl transition-all hover:border-indigo-500/30"
+
+        {cargando ? (
+          <p className="p-6 text-center text-sm text-slate-400">Cargando movimientos...</p>
+        ) : gastosVisibles.length === 0 ? (
+          <p className="p-6 text-center text-sm text-slate-400">
+            {soloHoy ? 'Aún no registras gastos hoy.' : 'No hay gastos registrados.'}
+          </p>
+        ) : (
+          <ul className="divide-y divide-slate-800/80">
+            {gastosVisibles.map((gasto, idx) => (
+              <li
+                key={gasto.id || idx}
+                className="px-4 py-3.5 flex items-center justify-between gap-3 hover:bg-[#0D1117]/60 transition-colors"
               >
-                {/* Cabecera del Día */}
-                <div className="flex justify-between items-center pb-3 border-b border-slate-800/60 mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-cyan-400 font-mono bg-cyan-950/40 px-2.5 py-1 rounded-lg border border-cyan-500/20">
-                      📅 {fecha}
-                    </span>
-                    <span className="text-[11px] text-slate-400 font-mono">
-                      ({infoDia.transacciones.length} {infoDia.transacciones.length === 1 ? 'movimiento' : 'movimientos'})
-                    </span>
-                  </div>
-                  <span className="text-sm font-bold text-rose-400 font-mono">
-                    {formatearMonto(infoDia.totalDia)}
-                  </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-100 truncate">
+                    {gasto.descripcion || 'Gasto sin descripción'}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {gasto.categoria || 'General'} •{' '}
+                    {String(gasto.fecha || gasto.created_at || '').slice(0, 10)}
+                  </p>
                 </div>
 
-                {/* Detalle de transacciones del día */}
-                <div className="space-y-2">
-                  {infoDia.transacciones.map((tx, idx) => (
-                    <div key={idx} className="flex justify-between items-center text-xs py-1.5 px-3 rounded-xl bg-slate-950/40 border border-slate-900">
-                      <div className="flex flex-col">
-                        <span className="text-slate-200 font-medium">{tx.descripcion}</span>
-                        <span className="text-[10px] text-slate-400 font-mono">{tx.categoria}</span>
-                      </div>
-                      <span className="font-semibold text-rose-400/90 font-mono">
-                        -{formatearMonto(tx.monto)}
-                      </span>
-                    </div>
-                  ))}
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm font-bold text-[#F43F5E]">
+                    -{formatearMonedaCLP(gasto.monto)}
+                  </span>
+
+                  {typeof onEliminarGasto === 'function' && gasto.id && (
+                    <button
+                      type="button"
+                      onClick={() => onEliminarGasto(gasto.id)}
+                      title="Eliminar gasto"
+                      className="text-xs text-slate-500 hover:text-[#F43F5E] px-2 py-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 }
