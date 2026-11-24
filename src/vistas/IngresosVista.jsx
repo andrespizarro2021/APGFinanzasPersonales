@@ -1,27 +1,90 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { obtenerIngresos, agregarIngreso, eliminarIngreso } from '../servicios/transaccionServicio';
-import { formatearMoneda } from '../utilidades/formateaMoneda';
-import { formatearMonto} from '../utilidades/formateador';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { supabase } from '../configuracion/supabaseCliente';
 
-export function IngresosVista({ usuarioId, modoOculto }) {
+function obtenerFechaLocalISO(fecha = new Date()) {
+  const anio = fecha.getFullYear();
+  const mes = String(fecha.getMonth() + 1).padStart(2, '0');
+  const dia = String(fecha.getDate()).padStart(2, '0');
+  return `${anio}-${mes}-${dia}`;
+}
+
+function normalizarIngreso(item) {
+  const monto = Number(item?.amount ?? item?.monto ?? 0);
+  const descripcion =
+    item?.description ?? item?.descripcion ?? item?.source ?? item?.fuente ?? 'Ingreso';
+  const categoria = item?.category ?? item?.categoria ?? 'Sueldo / Honorarios';
+  const rawFecha = item?.created_at ?? item?.fecha ?? item?.date ?? '';
+
+  let fechaISO = '';
+  if (rawFecha) {
+    const parsed = new Date(rawFecha);
+    if (!Number.isNaN(parsed.getTime())) {
+      fechaISO = obtenerFechaLocalISO(parsed);
+    } else if (typeof rawFecha === 'string' && /^\d{4}-\d{2}-\d{2}/.test(rawFecha.trim())) {
+      fechaISO = rawFecha.trim().slice(0, 10);
+    }
+  }
+
+  return {
+    ...item,
+    id: item?.id,
+    monto: Number.isFinite(monto) ? monto : 0,
+    descripcion,
+    categoria,
+    fechaISO,
+  };
+}
+
+export function IngresosVista({ usuarioId, modoOculto = false }) {
   const [ingresos, setIngresos] = useState([]);
+  const [tablaActiva, setTablaActiva] = useState('incomes');
   const [cargando, setCargando] = useState(true);
   const [guardando, setGuardando] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
 
-  // Estados del formulario
+  const [descripcion, setDescripcion] = useState('');
   const [monto, setMonto] = useState('');
   const [categoria, setCategoria] = useState('Sueldo');
-  const [descripcion, setDescripcion] = useState('');
-  const [fecha, setFecha] = useState(new Date().toISOString().split('T')[0]);
 
   const cargarIngresos = useCallback(async () => {
-    if (!usuarioId) return;
+    if (!usuarioId) {
+      setCargando(false);
+      return;
+    }
+
+    setCargando(true);
+    setErrorMsg(null);
+
     try {
-      setCargando(true);
-      const data = await obtenerIngresos(usuarioId);
-      setIngresos(data);
-    } catch (error) {
-      console.error('Error al cargar ingresos:', error);
+      let tablaUsada = 'incomes';
+      let { data, error } = await supabase
+        .from('incomes')
+        .select('*')
+        .eq('user_id', usuarioId)
+        .order('created_at', { ascending: false });
+
+      if (
+        error &&
+        (error.code === 'PGRST205' ||
+          String(error.message || '').toLowerCase().includes('schema cache'))
+      ) {
+        tablaUsada = 'ingresos';
+        const res = await supabase
+          .from('ingresos')
+          .select('*')
+          .eq('user_id', usuarioId)
+          .order('created_at', { ascending: false });
+        data = res.data;
+        error = res.error;
+      }
+
+      if (error) throw error;
+
+      setTablaActiva(tablaUsada);
+      setIngresos((Array.isArray(data) ? data : []).map(normalizarIngreso));
+    } catch (err) {
+      console.error('Error al cargar ingresos:', err);
+      setErrorMsg(err?.message || 'No se pudieron cargar los ingresos.');
     } finally {
       setCargando(false);
     }
@@ -31,157 +94,240 @@ export function IngresosVista({ usuarioId, modoOculto }) {
     cargarIngresos();
   }, [cargarIngresos]);
 
-  const handleSubmit = async (e) => {
+  const formatoCLP = useCallback(
+    (valor = 0) => {
+      if (modoOculto) return '••••••';
+      return new Intl.NumberFormat('es-CL', {
+        style: 'currency',
+        currency: 'CLP',
+        maximumFractionDigits: 0,
+      }).format(Math.round(Number(valor) || 0));
+    },
+    [modoOculto]
+  );
+
+  const hoyISO = useMemo(() => obtenerFechaLocalISO(), []);
+
+  const totalIngresos = useMemo(() => {
+    return ingresos.reduce((acc, item) => acc + item.monto, 0);
+  }, [ingresos]);
+
+  const manejarAgregarIngreso = async (e) => {
     e.preventDefault();
-    if (!monto) return;
+    const montoNum = Number(monto);
+
+    if (!usuarioId) {
+      setErrorMsg('Sesión no encontrada para guardar el ingreso.');
+      return;
+    }
+    if (!descripcion.trim() || !montoNum || montoNum <= 0) {
+      setErrorMsg('Ingresa una descripción y un monto válido mayor a 0.');
+      return;
+    }
+
+    setGuardando(true);
+    setErrorMsg(null);
 
     try {
-      setGuardando(true);
-      await agregarIngreso({
-        user_id: usuarioId,
-        amount: parseFloat(monto),
-        category: categoria,
-        description: descripcion,
-        date: fecha
-      });
+      const payload =
+        tablaActiva === 'incomes'
+          ? {
+              user_id: usuarioId,
+              description: descripcion.trim(),
+              amount: montoNum,
+              category: categoria || 'Otros',
+            }
+          : {
+              user_id: usuarioId,
+              descripcion: descripcion.trim(),
+              monto: montoNum,
+              categoria: categoria || 'Otros',
+            };
 
-      setMonto('');
+      const { data, error } = await supabase
+        .from(tablaActiva)
+        .insert([payload])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setIngresos((prev) => [normalizarIngreso(data), ...prev]);
       setDescripcion('');
-      cargarIngresos();
-    } catch (error) {
-      console.error('Error al guardar ingreso:', error);
-      alert('Error al guardar el ingreso en Supabase.');
+      setMonto('');
+    } catch (err) {
+      console.error('Error al agregar ingreso:', err);
+      setErrorMsg(err?.message || 'No se pudo guardar el ingreso.');
     } finally {
       setGuardando(false);
     }
   };
 
-  const handleEliminar = async (id) => {
-    if (!window.confirm('¿Eliminar este registro de ingreso?')) return;
+  const manejarEliminarIngreso = async (idIngreso) => {
+    if (!usuarioId || !idIngreso) return;
+    setErrorMsg(null);
+
     try {
-      await eliminarIngreso(id);
-      cargarIngresos();
-    } catch (error) {
-      console.error('Error al eliminar:', error);
+      const { error } = await supabase
+        .from(tablaActiva)
+        .delete()
+        .eq('id', idIngreso)
+        .eq('user_id', usuarioId);
+
+      if (error) throw error;
+
+      setIngresos((prev) => prev.filter((item) => item.id !== idIngreso));
+    } catch (err) {
+      console.error('Error al eliminar ingreso:', err);
+      setErrorMsg(err?.message || 'No se pudo eliminar el ingreso.');
     }
   };
 
-  const totalIngresos = ingresos.reduce((acc, item) => acc + Number(item.amount), 0);
-
   return (
-    <div className="max-w-3xl mx-auto space-y-6 animate-fadeIn font-sans">
-      
-      {/* Encabezado Principal con Glassmorphism y Neón Esmeralda */}
-      <div className="glass-card glass-card-hover p-6 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 relative overflow-hidden neon-glow-emerald">
-        <div className="absolute -right-8 -top-8 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none"></div>
+    <div className="space-y-6">
+      {/* Encabezado */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-black text-white tracking-tight">Gestión de Ingresos</h1>
-          <p className="text-xs text-slate-400 mt-1">Registra tus entradas de dinero con trazabilidad segura.</p>
+          <h1 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+            Ingresos
+          </h1>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Registro y control de entradas de dinero ({hoyISO})
+          </p>
         </div>
-        <div className="bg-slate-900/80 px-4 py-2 rounded-xl text-xs font-medium text-slate-300 border border-slate-700/60 shadow-inner">
-          Total Ingresos: <strong className="text-emerald-400 font-mono text-sm ml-1">${formatearMoneda(totalIngresos)}</strong>
+
+        <button
+          type="button"
+          onClick={cargarIngresos}
+          className="self-start sm:self-auto px-3 py-1.5 rounded-xl text-xs font-semibold bg-[#161B22] hover:bg-slate-800 text-slate-300 border border-slate-800 transition-colors cursor-pointer"
+        >
+          ↻ Actualizar
+        </button>
+      </div>
+
+      {errorMsg && (
+        <div className="p-3.5 rounded-xl bg-[#F43F5E]/10 border border-[#F43F5E]/30 text-[#F43F5E] text-xs">
+          {errorMsg}
+        </div>
+      )}
+
+      {/* Resumen Total Ingresos */}
+      <div className="p-5 rounded-2xl bg-[#161B22] border border-[#10B981]/35 flex items-center justify-between shadow-lg">
+        <div>
+          <span className="text-xs uppercase tracking-wider text-slate-400 font-semibold block">
+            Total ingresos registrados
+          </span>
+          <p className="text-2xl sm:text-3xl font-black text-[#10B981] mt-1">
+            {cargando ? '...' : formatoCLP(totalIngresos)}
+          </p>
+          <span className="text-xs text-slate-400 mt-1 block">
+            {ingresos.length} {ingresos.length === 1 ? 'ingreso registrado' : 'ingresos registrados'}
+          </span>
         </div>
       </div>
 
-      {/* 1. Formulario Arriba */}
-      <div className="glass-card glass-card-hover p-6 rounded-2xl relative overflow-hidden">
-        <h3 className="text-base font-bold text-white mb-4 flex items-center gap-2">
-          <span>💰</span> Registrar Nuevo Ingreso
-        </h3>
-        <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Monto ($)</label>
-            <input
-              type="number"
-              step="any"
-              value={monto}
-              onChange={(e) => setMonto(e.target.value)}
-              placeholder="0"
-              required
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-white font-mono text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Categoría</label>
-            <select
-              value={categoria}
-              onChange={(e) => setCategoria(e.target.value)}
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-white font-medium text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
-            >
-              <option value="Sueldo">Sueldo / Salario</option>
-              <option value="Freelance">Freelance / Extra</option>
-              <option value="Inversiones">Inversiones</option>
-              <option value="Regalo">Regalo / Varios</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">Descripción (Opcional)</label>
-            <input
-              type="text"
-              value={descripcion}
-              onChange={(e) => setDescripcion(e.target.value)}
-              placeholder="Ej. Quincena de enero"
-              className="w-full px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-white font-medium text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none transition-all"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-1">
-                📅 Fecha de la Transacción
-            </label>
-            <input
-                type="date"
-                value={fecha} // o date
-                onChange={(e) => setFecha(e.target.value)} // o setDate(e.target.value)
-                required
-                className="w-full px-4 py-2.5 rounded-xl border border-slate-700 bg-slate-950 text-white font-medium text-sm focus:ring-2 focus:ring-indigo-500 focus:outline-none transition-all [color-scheme:dark]"
-            />
-            </div>
-          <div className="sm:col-span-2 pt-2">
-            <button
-              type="submit"
-              disabled={guardando}
-              className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl shadow-lg shadow-emerald-600/30 transition-all duration-300 text-sm disabled:opacity-50"
-            >
-              {guardando ? 'Guardando...' : '⚡ Guardar Ingreso'}
-            </button>
-          </div>
-        </form>
-      </div>
+      {/* Formulario nuevo ingreso */}
+      <form
+        onSubmit={manejarAgregarIngreso}
+        className="p-5 rounded-2xl bg-[#161B22] border border-slate-800 space-y-3"
+      >
+        <h2 className="text-sm font-bold text-slate-200">Registrar nuevo ingreso</h2>
 
-      {/* 2. Historial Abajo */}
-      <div className="glass-card p-6 rounded-2xl relative">
-        <h3 className="text-base font-bold text-white mb-4">Historial de Ingresos</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <input
+            type="text"
+            required
+            placeholder="Ej. Sueldo, venta, proyecto..."
+            value={descripcion}
+            onChange={(e) => setDescripcion(e.target.value)}
+            className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#10B981]"
+          />
+
+          <input
+            type="number"
+            required
+            min="1"
+            step="1"
+            placeholder="Monto ($)"
+            value={monto}
+            onChange={(e) => setMonto(e.target.value)}
+            className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#10B981]"
+          />
+        </div>
+
+        <select
+          value={categoria}
+          onChange={(e) => setCategoria(e.target.value)}
+          className="w-full bg-[#0D1117] border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-[#10B981]"
+        >
+          <option value="Sueldo">Sueldo</option>
+          <option value="Honorarios / Freelance">Honorarios / Freelance</option>
+          <option value="Ventas">Ventas</option>
+          <option value="Bonos / Extras">Bonos / Extras</option>
+          <option value="Otros">Otros</option>
+        </select>
+
+        <button
+          type="submit"
+          disabled={guardando}
+          className="w-full py-2.5 rounded-xl bg-[#10B981] hover:bg-emerald-600 text-slate-950 font-bold text-sm transition-colors cursor-pointer disabled:opacity-50"
+        >
+          {guardando ? 'Guardando...' : '+ Agregar Ingreso'}
+        </button>
+      </form>
+
+      {/* Listado */}
+      <div className="rounded-2xl bg-[#161B22] border border-slate-800 overflow-hidden">
+        <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+          <h2 className="text-sm font-bold text-slate-200">Listado de ingresos</h2>
+          <span className="text-xs text-slate-400">{ingresos.length} registros</span>
+        </div>
+
         {cargando ? (
-          <div className="text-center py-8 text-slate-400 text-sm">Cargando historial...</div>
+          <p className="p-6 text-center text-sm text-slate-400">Cargando ingresos...</p>
         ) : ingresos.length === 0 ? (
-          <div className="text-center py-8 text-slate-400 text-sm">No hay ingresos registrados todavía.</div>
+          <p className="p-6 text-center text-sm text-slate-400">
+            No tienes ingresos registrados aún.
+          </p>
         ) : (
-          <div className="space-y-3">
-            {ingresos.map((item) => (
-              <div 
-                key={item.id} 
-                className="flex justify-between items-center p-4 bg-slate-950/60 rounded-xl border border-slate-800/80 hover:border-slate-700 transition-all"
+          <ul className="divide-y divide-slate-800/80">
+            {ingresos.map((ingreso, idx) => (
+              <li
+                key={ingreso?.id ?? idx}
+                className="px-4 py-3.5 flex items-center justify-between gap-3 hover:bg-[#0D1117]/60 transition-colors"
               >
-                <div>
-                  <h4 className="font-bold text-white text-sm">{item.category}</h4>
-                  <p className="text-xs text-slate-400 mt-0.5">{item.description || 'Sin descripción'} • <span className="font-mono">{item.date}</span></p>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-slate-100 truncate">
+                    {ingreso.descripcion}
+                  </p>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    {ingreso.categoria} • {ingreso.fechaISO || 'Sin fecha'}
+                  </p>
                 </div>
-                <div className="flex items-center gap-4">
-                  <span className="font-mono font-bold text-emerald-400 text-base">+${formatearMoneda(item.amount)}</span>
-                  <button 
-                    onClick={() => handleEliminar(item.id)} 
-                    className="text-slate-500 hover:text-rose-400 text-xs p-1.5 rounded-lg hover:bg-slate-900 transition-colors"
-                    title="Eliminar ingreso"
-                  >
-                    🗑️
-                  </button>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm font-bold text-[#10B981]">
+                    +{formatoCLP(ingreso.monto)}
+                  </span>
+
+                  {ingreso?.id && (
+                    <button
+                      type="button"
+                      onClick={() => manejarEliminarIngreso(ingreso.id)}
+                      title="Eliminar ingreso"
+                      className="text-xs text-slate-400 hover:text-[#F43F5E] px-2 py-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
-
     </div>
   );
 }
+
+export default IngresosVista;
